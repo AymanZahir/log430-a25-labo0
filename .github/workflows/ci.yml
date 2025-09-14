@@ -28,27 +28,54 @@ jobs:
           python -m pytest 
 
       - name: Déploiement via SSH
+        if: ${{ github.ref == 'refs/heads/main' && success() }}
+        env:
+          SSH_SERVER_HOST: ${{ secrets.SSH_SERVER_HOST }}
+          SSH_USER:        ${{ secrets.SSH_USER }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
-          # Install SSH client
           sudo apt-get update && sudo apt-get install -y openssh-client
 
-          if [ -z "${{ secrets.SSH_SERVER_HOST }}" ]; then
-            echo "ERROR: SSH_SERVER_HOST secret is not set or empty"
-            exit 1
-          else
-            echo "SSH_SERVER_HOST is set"
-          fi
-          
-          # Setup SSH key
+          test -n "$SSH_SERVER_HOST" || { echo "SSH_SERVER_HOST secret manquant"; exit 1; }
+          test -n "$SSH_USER"        || { echo "SSH_USER secret manquant"; exit 1; }
+          test -n "$SSH_PRIVATE_KEY" || { echo "SSH_PRIVATE_KEY secret manquant"; exit 1; }
+
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          
-          # Add server to known hosts to avoid host key verification prompt
-          ssh-keyscan -H ${{ secrets.SSH_SERVER_HOST }} >> ~/.ssh/known_hosts
-          
-          # Deploy via SSH
-          ssh -i ~/.ssh/id_rsa ${{ secrets.SSH_USER }}@${{ secrets.SSH_SERVER_HOST }} << 'EOF'
-            cd log430-a25-labo0
-            git pull origin main
-          EOF
+          ssh-keyscan -H "$SSH_SERVER_HOST" >> ~/.ssh/known_hosts
+
+          ssh -i ~/.ssh/id_rsa "$SSH_USER@$SSH_SERVER_HOST" 'bash -lc "
+            set -euo pipefail
+            REPO_URL=\"https://github.com/AymanZahir/log430-a25-labo0\"
+            APP_DIR=\"\$HOME/apps/log430-a25-labo0\"
+            VENV_DIR=\"\$APP_DIR/.venv/labo0\"
+
+            echo \"[INFO] Host: \$(hostname)\"
+            mkdir -p \"\$APP_DIR\"
+            cd \"\$APP_DIR\"
+
+            if [ ! -d .git ]; then
+              echo \"[INFO] Clone...\"
+              git clone \"\$REPO_URL\" .
+            else
+              echo \"[INFO] Update...\"
+              git fetch --all --prune
+              git reset --hard origin/main
+            fi
+            echo \"[INFO] Commit:\"
+            git log -1 --oneline
+
+            if [ ! -d \"\$VENV_DIR\" ]; then
+              python3 -m venv \"\$VENV_DIR\"
+            fi
+            source \"\$VENV_DIR/bin/activate\"
+            python -m pip install --upgrade pip
+            test -f requirements.txt && pip install -r requirements.txt
+            pip install pytest
+
+            echo \"[INFO] Run tests on VM...\"
+            python -m pytest -q -C src
+
+            echo \"[INFO] Deploy OK (app prête: python src/calculator.py)\"
+          "'
